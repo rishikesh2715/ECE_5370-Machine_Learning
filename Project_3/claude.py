@@ -1,165 +1,146 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_squared_error
 
-# Function to generate the dataset D
-def generate_dataset(L=100, N=25):
+# Set random seed for reproducibility
+np.random.seed(42)
+
+def h(x):
+    """True function h(x) = sin(2πx)"""
+    return np.sin(2 * np.pi * x)
+
+def generate_datasets(L, N):
+    """Generate L datasets of N samples each"""
     datasets = []
-    
     for l in range(L):
-        # Generate X from uniform distribution U(0,1)
+        # Generate uniform X values between 0 and 1
         X = np.random.uniform(0, 1, N)
         
-        # Generate noise from Gaussian distribution N(0, 0.3)
+        # Generate target values with Gaussian noise
         epsilon = np.random.normal(0, 0.3, N)
-        
-        # Generate target values: t = sin(2πX) + ε
-        t = np.sin(2 * np.pi * X) + epsilon
-        
-        # Sort X and corresponding t for easier plotting
-        sort_indices = np.argsort(X)
-        X = X[sort_indices]
-        t = t[sort_indices]
+        t = h(X) + epsilon
         
         datasets.append((X, t))
     
     return datasets
 
-# Function to calculate Gaussian basis function
-def gaussian_basis_function(x, mu, s):
-    return np.exp(-((x - mu) ** 2) / (2 * s ** 2))
+def generate_test_data(num_points):
+    """Generate test data of num_points samples"""
+    X_test = np.linspace(0, 1, num_points)
+    t_test_true = h(X_test)  # True function values without noise
+    epsilon_test = np.random.normal(0, 0.3, num_points)
+    t_test = t_test_true + epsilon_test  # Noisy test targets
+    
+    return X_test, t_test_true, t_test
 
-# Function to fit model with Gaussian basis functions and regularization
-def fit_model(X, t, s=0.1, lambda_val=0):
-    N = len(X)
+def gaussian_basis(x, centers, s):
+    """Compute Gaussian basis functions"""
+    # Add bias term
+    basis = np.ones((len(x), len(centers) + 1))
     
-    # Use each x_n as center for a basis function
-    centers = X
-    M = len(centers)
+    # Compute Gaussian basis function values
+    x = x.reshape(-1, 1)  # Ensure x is a column vector
+    centers = centers.reshape(1, -1)  # Ensure centers is a row vector
     
-    # Design matrix Phi
-    Phi = np.zeros((N, M))
-    for i in range(N):
-        for j in range(M):
-            Phi[i, j] = gaussian_basis_function(X[i], centers[j], s)
+    # Fill in the Gaussian basis terms (excluding the bias term)
+    basis[:, 1:] = np.exp(-0.5 * ((x - centers) / s) ** 2)
     
-    # Add regularization with parameter lambda
-    A = Phi.T @ Phi + lambda_val * np.eye(M)
-    b = Phi.T @ t
-    
-    # Calculate weights: w = (Phi.T * Phi + lambda * I)^-1 * Phi.T * t
-    w = np.linalg.solve(A, b)
-    
-    return w, centers
+    return basis
 
-# Function to make predictions with the model
-def predict(X_test, weights, centers, s=0.1):
-    N_test = len(X_test)
-    M = len(centers)
+def fit_model(X, t, centers, s, lambda_val):
+    """Fit linear regression model with Gaussian basis functions and regularization"""
+    # Compute design matrix Phi
+    Phi = gaussian_basis(X, centers, s)
     
-    # Design matrix for test points
-    Phi_test = np.zeros((N_test, M))
-    for i in range(N_test):
-        for j in range(M):
-            Phi_test[i, j] = gaussian_basis_function(X_test[i], centers[j], s)
+    # Compute regularized weights using the normal equations
+    I = np.eye(Phi.shape[1])
+    I[0, 0] = 0  # Don't regularize the bias term
+    w = np.linalg.solve(Phi.T @ Phi + lambda_val * I, Phi.T @ t)
     
-    # Make predictions
-    y_pred = Phi_test @ weights
-    
-    return y_pred
+    return w
 
-# Function to calculate bias^2, variance, and test error
-def calculate_metrics(datasets, lambda_val, s=0.1, test_size=1000):
+def predict(X, w, centers, s):
+    """Make predictions using the fitted model"""
+    Phi = gaussian_basis(X, centers, s)
+    return Phi @ w
+
+def compute_metrics(lambda_values, datasets, centers, s, X_test, t_test_true, t_test):
+    """Compute bias, variance, and test error for each lambda value"""
     L = len(datasets)
-    X_test = np.linspace(0, 1, test_size)
-    y_true = np.sin(2 * np.pi * X_test)  # True function without noise
     
-    # Collect predictions for each dataset
-    all_predictions = np.zeros((L, test_size))
+    # Arrays to store results
+    bias_squared = np.zeros(len(lambda_values))
+    variance = np.zeros(len(lambda_values))
+    test_error = np.zeros(len(lambda_values))
     
-    for l, (X, t) in enumerate(datasets):
-        weights, centers = fit_model(X, t, s, lambda_val)
-        predictions = predict(X_test, weights, centers, s)
-        all_predictions[l] = predictions
-    
-    # Calculate average prediction
-    f_avg = np.mean(all_predictions, axis=0)
-    
-    # Calculate bias^2
-    bias_squared = np.mean((f_avg - y_true) ** 2)
-    
-    # Calculate variance
-    variance = np.mean(np.mean((all_predictions - f_avg.reshape(1, -1)) ** 2, axis=0))
-    
-    # Calculate test error (average over all datasets)
-    test_error = np.mean(np.mean((all_predictions - y_true.reshape(1, -1)) ** 2, axis=1))
+    # For each regularization parameter
+    for i, lambda_val in enumerate(lambda_values):
+        # Store predictions for all L datasets on X_test points
+        all_predictions = np.zeros((L, len(X_test)))
+        
+        # Fit model to each dataset and predict on test data
+        for l in range(L):
+            X, t = datasets[l]
+            w = fit_model(X, t, centers, s, lambda_val)
+            all_predictions[l] = predict(X_test, w, centers, s)
+        
+        # Compute average prediction on test data (f̄)
+        f_bar = np.mean(all_predictions, axis=0)
+        
+        # Compute bias squared: (1/N) * sum((f̄(x) - h(x))^2)
+        bias_squared[i] = np.mean((f_bar - t_test_true) ** 2)
+        
+        # Compute variance: (1/N) * sum((1/L) * sum((f^(l)(x) - f̄(x))^2))
+        variance[i] = np.mean(np.var(all_predictions, axis=0))
+        
+        # Compute test error (average MSE on noisy test data)
+        mse_per_model = np.mean((all_predictions - t_test.reshape(1, -1)) ** 2, axis=1)
+        test_error[i] = np.mean(mse_per_model)
     
     return bias_squared, variance, test_error
 
-def main():
-    # Generate L=100 datasets, each with N=25 samples
-    print("Generating datasets...")
-    datasets = generate_dataset(L=100, N=25)
-    
-    # Define regularization parameter values to test
-    lambda_values = np.logspace(-6, 0, 15)
-    
-    # Arrays to store results
-    bias_squared_values = []
-    variance_values = []
-    test_error_values = []
-    
-    # Calculate metrics for each lambda value
-    print("Calculating metrics for different lambda values...")
-    for lambda_val in lambda_values:
-        bias_squared, variance, test_error = calculate_metrics(datasets, lambda_val, s=0.1)
-        bias_squared_values.append(bias_squared)
-        variance_values.append(variance)
-        test_error_values.append(test_error)
-        print(f"Lambda: {lambda_val:.6f}, Bias^2: {bias_squared:.6f}, Variance: {variance:.6f}, Test Error: {test_error:.6f}")
-    
-    # Plot the results
+def plot_results(lambda_values, bias_squared, variance, test_error):
+    """Plot the results"""
     plt.figure(figsize=(10, 6))
-    plt.loglog(lambda_values, bias_squared_values, 'r-', label='Bias^2')
-    plt.loglog(lambda_values, variance_values, 'b-', label='Variance')
-    plt.loglog(lambda_values, test_error_values, 'g-', label='Test Error')
-    plt.loglog(lambda_values, np.array(bias_squared_values) + np.array(variance_values), 'k--', label='Bias^2 + Variance')
-    plt.xlabel('Regularization Parameter (λ)')
+    plt.plot(np.log(lambda_values), bias_squared, 'b-', label='(bias)²')
+    plt.plot(np.log(lambda_values), variance, 'r-', label='variance')
+    plt.plot(np.log(lambda_values), bias_squared + variance, 'm-', label='(bias)² + variance')
+    plt.plot(np.log(lambda_values), test_error, 'k-', label='test error')
+    plt.xlabel('ln λ')
     plt.ylabel('Error')
-    plt.title('Bias-Variance Tradeoff with Regularization')
+    plt.ylim(0, 0.15)  # Match the y-axis range in the example
+    plt.xlim(-3, 2)    # Match the x-axis range in the example
     plt.legend()
     plt.grid(True)
+    plt.title('Bias-Variance Tradeoff')
     plt.savefig('bias_variance_tradeoff.png')
     plt.show()
 
-    # Visualize the model fit for one of the datasets with different lambda values
-    print("Visualizing model fits...")
-    X, t = datasets[0]  # Use the first dataset for visualization
-    X_dense = np.linspace(0, 1, 1000)
-    y_true = np.sin(2 * np.pi * X_dense)
+def main():
+    # Parameters
+    L = 100  # Number of datasets
+    N = 25   # Number of samples per dataset
+    s = 0.1  # Width of Gaussian basis functions
     
-    plt.figure(figsize=(15, 10))
+    # Generate the datasets
+    datasets = generate_datasets(L, N)
     
-    # Choose a few lambda values to visualize
-    lambda_viz = [0.000001, 0.001, 0.1, 1.0]
+    # Choose regularization parameters (log scale)
+    lambda_values = np.logspace(-3, 2, 20)
     
-    for i, lambda_val in enumerate(lambda_viz):
-        weights, centers = fit_model(X, t, s=0.1, lambda_val=lambda_val)
-        y_pred = predict(X_dense, weights, centers, s=0.1)
-        
-        plt.subplot(2, 2, i + 1)
-        plt.scatter(X, t, c='b', label='Training Data')
-        plt.plot(X_dense, y_true, 'g-', label='True Function')
-        plt.plot(X_dense, y_pred, 'r-', label=f'Fitted Model (λ={lambda_val})')
-        plt.title(f'Model Fit with λ={lambda_val}')
-        plt.xlabel('x')
-        plt.ylabel('y')
-        plt.legend()
-        plt.grid(True)
+    # Generate centers for basis functions (evenly spaced in [0, 1])
+    M = N  # Use same number of basis functions as data points
+    centers = np.linspace(0, 1, M)
     
-    plt.tight_layout()
-    plt.savefig('model_fits.png')
-    plt.show()
+    # Generate test data (1000 points)
+    X_test, t_test_true, t_test = generate_test_data(1000)
+    
+    # Compute bias, variance, and test error for each lambda
+    bias_squared, variance, test_error = compute_metrics(
+        lambda_values, datasets, centers, s, X_test, t_test_true, t_test
+    )
+    
+    # Plot results
+    plot_results(lambda_values, bias_squared, variance, test_error)
 
 if __name__ == "__main__":
     main()
